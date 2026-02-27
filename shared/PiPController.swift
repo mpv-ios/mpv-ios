@@ -165,7 +165,6 @@ extension PiPController: AVPictureInPictureControllerDelegate {
     }
     
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
-        print("Failed to start PiP: \(error)")
         delegate?.pipController(self, didStartPictureInPicture: false)
     }
     
@@ -199,6 +198,7 @@ extension PiPController: AVPictureInPictureSampleBufferPlaybackDelegate {
     
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion completionHandler: @escaping () -> Void) {
         delegate?.pipController(self, skipByInterval: skipInterval)
+        delegate?.pipControllerPlay(self)
         completionHandler()
     }
     

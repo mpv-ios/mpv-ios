@@ -637,21 +637,10 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func pipTapped() {
-        guard let pip = pipController else {
-            print("[PiP] ❌ pipController is nil")
-            return
-        }
-        let possible = pip.isPictureInPicturePossible
-        let active = pip.isPictureInPictureActive
-        print("[PiP] Button tapped — possible=\(possible) active=\(active)")
-        if active {
-            print("[PiP] Stopping PiP")
+        guard let pip = pipController else { return }
+        if pip.isPictureInPictureActive {
             pip.stopPictureInPicture()
         } else {
-            // Call startPictureInPicture() unconditionally — AVKit will surface
-            // the real failure reason in failedToStartPictureInPictureWithError
-            // rather than silently doing nothing when isPossible is momentarily false.
-            print("[PiP] Starting PiP (bypassing isPossible check)")
             pip.startPictureInPicture()
         }
     }
@@ -799,8 +788,15 @@ final class PlayerViewController: UIViewController {
 
     @objc private func appWillEnterForeground() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, let pip = self.pipController else { return }
-            if pip.isPictureInPictureActive { pip.stopPictureInPicture() }
+            guard let self else { return }
+            if let pip = self.pipController, pip.isPictureInPictureActive {
+                pip.stopPictureInPicture()
+            }
+            // Re-request landscape — viewDidAppear won't fire again when resuming from background
+            self.view.window?.windowScene?.requestGeometryUpdate(
+                .iOS(interfaceOrientations: .landscape)
+            ) { _ in }
+            self.setNeedsUpdateOfSupportedInterfaceOrientations()
         }
     }
 }
