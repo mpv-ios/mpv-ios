@@ -724,6 +724,11 @@ final class MPVLayerRenderer {
     func setSubtitleScale(_ scale: Double) {
         setProperty(name: "sub-scale", value: String(scale))
     }
+
+    func setSubtitleDelay(_ seconds: Double) {
+        let clamped = max(-20.0, min(20.0, seconds))
+        setProperty(name: "sub-delay", value: String(clamped))
+    }
     
     func setSubtitleMarginY(_ margin: Int) {
         setProperty(name: "sub-margin-y", value: String(margin))

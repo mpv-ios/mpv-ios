@@ -121,7 +121,7 @@
 			mainGroup = 493CC6AD2F51ABBD0024C28C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				492F5ECE2F51BCF000624AB7 /* XCRemoteSwiftPackageReference "MPVKit" */,
+				492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "MPVKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 493CC6B72F51ABBD0024C28C /* Products */;
@@ -395,16 +395,12 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		492F5ECE2F51BCF000624AB7 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/streamyfin/MPVKit";
-			requirement = {
-				branch = "0.40.0-av";
-				kind = branch;
+		/* Begin XCLocalSwiftPackageReference section */
+			492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "MPVKit" */ = {
+				isa = XCLocalSwiftPackageReference;
+				relativePath = "/Users/alexkim/Code/MPVKit-ios";
 			};
-		};
-/* End XCRemoteSwiftPackageReference section */
+		/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		492F5ECF2F51BCF000624AB7 /* MPVKit-GPL */ = {

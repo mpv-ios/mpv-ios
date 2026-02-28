@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import AVFoundation
 import AVKit
+import MediaPlayer
 import CoreMedia
 import Combine
 
@@ -15,6 +16,7 @@ final class PlayerControlsModel: ObservableObject {
     /// Mid-playback buffering and seeks do NOT set this flag.
     @Published var isInitialLoading: Bool = true
     @Published var isScrubbing: Bool = false
+    @Published var isVolumeHUDVisible: Bool = false
 
     @AppStorage("skipBackwardSeconds") var skipBack: Int = 10
     @AppStorage("skipForwardSeconds") var skipForward: Int = 10
@@ -87,7 +89,7 @@ private struct ControlsOverlay: View {
     var body: some View {
         ZStack {
             // Top bar — close + PiP
-            VStack {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 12) {
                     GlassCircleButton(symbol: "xmark") { model.onClose?() }
                     GlassCircleButton(symbol: "pip.enter") { model.onPip?() }
@@ -122,6 +124,72 @@ private struct ControlsOverlay: View {
     }
 }
 
+// MARK: - Native Volume Slider (MPVolumeView)
+
+private struct VolumeSlider: UIViewRepresentable {
+    func makeUIView(context: Context) -> MPVolumeView {
+        let v = MPVolumeView(frame: .zero)
+        v.semanticContentAttribute = .forceLeftToRight
+        v.showsRouteButton = false
+        v.showsVolumeSlider = true
+        v.translatesAutoresizingMaskIntoConstraints = false
+        // Style inner UISlider to match progress scrubber
+        if let slider = v.subviews.compactMap({ $0 as? UISlider }).first {
+            slider.semanticContentAttribute = .forceLeftToRight
+            slider.minimumTrackTintColor = .white
+            slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.35)
+            slider.thumbTintColor = .white
+        }
+        return v
+    }
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {
+        uiView.semanticContentAttribute = .forceLeftToRight
+        // Re-apply styling in case subviews were recreated
+        if let slider = uiView.subviews.compactMap({ $0 as? UISlider }).first {
+            slider.semanticContentAttribute = .forceLeftToRight
+            slider.minimumTrackTintColor = .white
+            slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.35)
+            slider.thumbTintColor = .white
+        }
+    }
+}
+
+// MARK: - Liquid Glass Pill Wrapper
+
+private struct GlassPill<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            content()
+                .frame(minWidth: 140)
+                .background {
+                    Capsule().glassEffect(.regular.interactive())
+                }
+                .overlay(
+                    Capsule()
+                        .fill(Color.black.opacity(0.18))
+                )
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.18), lineWidth: 1 / UIScreen.main.scale)
+                )
+        } else {
+            content()
+                .frame(minWidth: 140)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .fill(Color.black.opacity(0.18))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.18), lineWidth: 1 / UIScreen.main.scale)
+                )
+        }
+    }
+}
+
 // MARK: - SwiftUI Screen
 
 struct iOSPlayerScreen: View {
@@ -133,6 +201,15 @@ struct iOSPlayerScreen: View {
             _PlayerViewControllerRepresentable(url: url, controls: controls)
                 .ignoresSafeArea()
             ControlsOverlay(model: controls)
+        }
+        .overlay(alignment: .topTrailing) {
+            VolumeSlider()
+                .frame(width: 200, height: 30)
+                .padding(.trailing, 20)
+                .padding(.top, 19)
+                .opacity((controls.isVisible || controls.isVolumeHUDVisible) ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: controls.isVolumeHUDVisible)
+                .animation(.easeInOut(duration: 0.2), value: controls.isVisible)
         }
     }
 }
@@ -183,18 +260,32 @@ final class PlayerViewController: UIViewController {
 
     private var isZoomFill = false
 
+    private let speedIndicatorContainer: UIVisualEffectView = {
+        let v: UIVisualEffectView
+        if #available(iOS 26.0, *) {
+            v = UIVisualEffectView(effect: UIGlassEffect())
+        } else {
+            v = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        }
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.layer.cornerRadius = 22
+        v.clipsToBounds = true
+        let hairline = 1.0 / UIScreen.main.scale
+        v.layer.borderWidth = hairline
+        v.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        v.alpha = 0
+        return v
+    }()
     private let speedIndicatorLabel: UILabel = {
         let lbl = UILabel()
         lbl.translatesAutoresizingMaskIntoConstraints = false
         lbl.textColor = .white
-        lbl.font = .systemFont(ofSize: 16, weight: .bold)
+        lbl.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
         lbl.textAlignment = .center
-        lbl.backgroundColor = UIColor(white: 0.2, alpha: 0.8)
-        lbl.layer.cornerRadius = 20
-        lbl.clipsToBounds = true
-        lbl.alpha = 0
         return lbl
     }()
+
+    private var speedIndicatorHideWorkItem: DispatchWorkItem?
 
     private let progressContainer: UIView = {
         let v = UIView()
@@ -262,6 +353,16 @@ final class PlayerViewController: UIViewController {
         return b
     }()
 
+    private lazy var gearButton: UIButton = {
+        let b = UIButton(type: .system)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.tintColor = .white
+        let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        b.setImage(UIImage(systemName: "gearshape", withConfiguration: cfg), for: .normal)
+        b.addTarget(self, action: #selector(gearTapped), for: .touchUpInside)
+        return b
+    }()
+
     // MARK: Controls model
 
     private let controls: PlayerControlsModel
@@ -281,7 +382,55 @@ final class PlayerViewController: UIViewController {
     private var cachedDuration: Double = 0
     private var originalSpeed: Double = 1.0
     private var controlsVisible = true
-    private var controlsHideWork: DispatchWorkItem?
+    private var panStartY: CGFloat = 0
+    private var startBrightness: CGFloat = 0
+    private var startVolume: Float = 0
+    private enum VerticalControlMode { case none, brightness, volume }
+    private var controlPanMode: VerticalControlMode = .none
+    private var brightnessIndicatorHideWorkItem: DispatchWorkItem?
+    private let brightnessIndicator: UIVisualEffectView = {
+        let v: UIVisualEffectView
+        if #available(iOS 26.0, *) {
+            v = UIVisualEffectView(effect: UIGlassEffect())
+        } else {
+            v = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        }
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.layer.cornerRadius = 22
+        v.clipsToBounds = true
+        let hairline = 1.0 / UIScreen.main.scale
+        v.layer.borderWidth = hairline
+        v.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        v.alpha = 0
+        return v
+    }()
+    private let brightnessIndicatorLabel: UILabel = {
+        let l = UILabel()
+        l.translatesAutoresizingMaskIntoConstraints = false
+        l.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
+        l.textColor = .white
+        l.textAlignment = .center
+        l.text = "100%"
+        l.setContentHuggingPriority(.required, for: .horizontal)
+        l.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return l
+    }()
+    private let brightnessIconView: UIImageView = {
+        let iv = UIImageView(image: UIImage(systemName: "sun.max.fill"))
+        iv.translatesAutoresizingMaskIntoConstraints = false
+        iv.tintColor = .white
+        iv.contentMode = .scaleAspectFit
+        return iv
+    }()
+    private let hiddenVolumeView: MPVolumeView = {
+        let v = MPVolumeView(frame: .zero)
+        v.alpha = 0.01 // keep in hierarchy to suppress system HUD
+        v.isUserInteractionEnabled = false
+        v.showsRouteButton = false
+        v.showsVolumeSlider = true
+        v.semanticContentAttribute = .forceLeftToRight
+        return v
+    }()
 
     // MARK: Init
 
@@ -294,6 +443,10 @@ final class PlayerViewController: UIViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    // Volume-only HUD shown when controls are hidden and volume changes
+    private var volumeHUDHideWorkItem: DispatchWorkItem?
+    private var volumeObservation: NSKeyValueObservation?
+    private var controlsAutoHideWorkItem: DispatchWorkItem?
     // MARK: Lifecycle
 
     override func viewDidLoad() {
@@ -305,6 +458,7 @@ final class PlayerViewController: UIViewController {
         setupGradient()
         setupActions()
         setupHoldGesture()
+        setupSwipeGestures()
 
         do {
             try renderer.start()
@@ -327,7 +481,13 @@ final class PlayerViewController: UIViewController {
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
 
         setupAudioSession()
-        showControlsTemporarily()
+        // Observe system volume so we can show the HUD when it changes
+        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.handleSystemVolumeChanged()
+            }
+        }
+        showControls()
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -374,6 +534,9 @@ final class PlayerViewController: UIViewController {
         pipController?.invalidate()
         renderer.stop()
         displayLayer.removeFromSuperlayer()
+        volumeObservation?.invalidate()
+        controlsAutoHideWorkItem?.cancel()
+        volumeHUDHideWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -388,9 +551,24 @@ final class PlayerViewController: UIViewController {
 
         videoContainer.addSubview(controlsOverlayView)
         videoContainer.addSubview(loadingIndicator)
-        videoContainer.addSubview(speedIndicatorLabel)
+        videoContainer.addSubview(speedIndicatorContainer)
+        speedIndicatorContainer.contentView.addSubview(speedIndicatorLabel)
         videoContainer.addSubview(progressContainer)
         videoContainer.addSubview(mediaOptionsContainer)
+        videoContainer.addSubview(brightnessIndicator)
+        let brightStack = UIStackView(arrangedSubviews: [brightnessIconView, brightnessIndicatorLabel])
+        brightStack.translatesAutoresizingMaskIntoConstraints = false
+        brightStack.axis = .horizontal
+        brightStack.alignment = .center
+        brightStack.spacing = 4
+        brightnessIndicator.contentView.addSubview(brightStack)
+
+        // Button stack inside the media options pill
+        let buttonStack = UIStackView(arrangedSubviews: [subtitleButton, audioButton, gearButton])
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.axis = .horizontal
+        buttonStack.distribution = .fillEqually
+        buttonStack.spacing = 0
 
         // Liquid glass background for the media options pill
         let mediaGlassView: UIVisualEffectView
@@ -403,8 +581,7 @@ final class PlayerViewController: UIViewController {
         mediaGlassView.layer.cornerRadius = 22
         mediaGlassView.clipsToBounds = true
         mediaOptionsContainer.insertSubview(mediaGlassView, at: 0)
-        mediaOptionsContainer.addSubview(subtitleButton)
-        mediaOptionsContainer.addSubview(audioButton)
+        mediaOptionsContainer.addSubview(buttonStack)
 
         // Liquid glass background for the progress pill
         let progressGlassView: UIVisualEffectView
@@ -435,10 +612,13 @@ final class PlayerViewController: UIViewController {
             loadingIndicator.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
 
-            speedIndicatorLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            speedIndicatorLabel.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
-            speedIndicatorLabel.widthAnchor.constraint(equalToConstant: 100),
-            speedIndicatorLabel.heightAnchor.constraint(equalToConstant: 40),
+            speedIndicatorContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            speedIndicatorContainer.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+            speedIndicatorContainer.heightAnchor.constraint(equalToConstant: 44),
+            speedIndicatorContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
+            speedIndicatorLabel.leadingAnchor.constraint(equalTo: speedIndicatorContainer.contentView.leadingAnchor, constant: 14),
+            speedIndicatorLabel.trailingAnchor.constraint(equalTo: speedIndicatorContainer.contentView.trailingAnchor, constant: -14),
+            speedIndicatorLabel.centerYAnchor.constraint(equalTo: speedIndicatorContainer.contentView.centerYAnchor),
 
             progressContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             progressContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
@@ -464,22 +644,29 @@ final class PlayerViewController: UIViewController {
             mediaOptionsContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             mediaOptionsContainer.bottomAnchor.constraint(equalTo: progressContainer.topAnchor, constant: -8),
             mediaOptionsContainer.heightAnchor.constraint(equalToConstant: 44),
-            mediaOptionsContainer.widthAnchor.constraint(equalToConstant: 96),
+            mediaOptionsContainer.widthAnchor.constraint(equalToConstant: 140),
 
             mediaGlassView.topAnchor.constraint(equalTo: mediaOptionsContainer.topAnchor),
             mediaGlassView.leadingAnchor.constraint(equalTo: mediaOptionsContainer.leadingAnchor),
             mediaGlassView.trailingAnchor.constraint(equalTo: mediaOptionsContainer.trailingAnchor),
             mediaGlassView.bottomAnchor.constraint(equalTo: mediaOptionsContainer.bottomAnchor),
 
-            subtitleButton.leadingAnchor.constraint(equalTo: mediaOptionsContainer.leadingAnchor, constant: 4),
-            subtitleButton.centerYAnchor.constraint(equalTo: mediaOptionsContainer.centerYAnchor),
-            subtitleButton.widthAnchor.constraint(equalToConstant: 44),
-            subtitleButton.heightAnchor.constraint(equalToConstant: 44),
+            buttonStack.topAnchor.constraint(equalTo: mediaOptionsContainer.topAnchor),
+            buttonStack.bottomAnchor.constraint(equalTo: mediaOptionsContainer.bottomAnchor),
+            buttonStack.leadingAnchor.constraint(equalTo: mediaOptionsContainer.leadingAnchor, constant: 4),
+            buttonStack.trailingAnchor.constraint(equalTo: mediaOptionsContainer.trailingAnchor, constant: -4),
 
-            audioButton.trailingAnchor.constraint(equalTo: mediaOptionsContainer.trailingAnchor, constant: -4),
-            audioButton.centerYAnchor.constraint(equalTo: mediaOptionsContainer.centerYAnchor),
-            audioButton.widthAnchor.constraint(equalToConstant: 44),
-            audioButton.heightAnchor.constraint(equalToConstant: 44),
+            // Brightness indicator — centered horizontally, above play button
+            brightnessIndicator.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+            brightnessIndicator.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor, constant: -90),
+            brightnessIndicator.heightAnchor.constraint(equalToConstant: 44),
+            brightnessIndicator.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
+            brightStack.leadingAnchor.constraint(equalTo: brightnessIndicator.contentView.leadingAnchor, constant: 10),
+            brightStack.trailingAnchor.constraint(equalTo: brightnessIndicator.contentView.trailingAnchor, constant: -10),
+            brightStack.centerYAnchor.constraint(equalTo: brightnessIndicator.contentView.centerYAnchor),
+            brightnessIconView.widthAnchor.constraint(equalToConstant: 16),
+            brightnessIconView.heightAnchor.constraint(equalToConstant: 16),
+            brightnessIndicatorLabel.widthAnchor.constraint(equalToConstant: 44),
         ])
     }
 
@@ -525,86 +712,61 @@ final class PlayerViewController: UIViewController {
         hold.minimumPressDuration = 0.5
         videoContainer.addGestureRecognizer(hold)
 
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        videoContainer.addGestureRecognizer(pinch)
+        let pinchEnabled = (UserDefaults.standard.object(forKey: "enablePinchZoom") as? Bool) ?? true
+        if pinchEnabled {
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            pinch.delegate = self
+            videoContainer.addGestureRecognizer(pinch)
+        }
+    }
+
+    private func setupSwipeGestures() {
+        // Hidden volume view for programmatic volume changes
+        view.addSubview(hiddenVolumeView)
+        hiddenVolumeView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            hiddenVolumeView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 0),
+            hiddenVolumeView.topAnchor.constraint(equalTo: view.topAnchor, constant: 0),
+            hiddenVolumeView.widthAnchor.constraint(equalToConstant: 1),
+            hiddenVolumeView.heightAnchor.constraint(equalToConstant: 1),
+        ])
+
+        let controlPan = UIPanGestureRecognizer(target: self, action: #selector(handleControlPan(_:)))
+        controlPan.maximumNumberOfTouches = 1
+        videoContainer.addGestureRecognizer(controlPan)
     }
 
     // MARK: Media Options Menus
 
     private func setupMediaOptionsButtons() {
-        subtitleButton.menu = makeDeferredSubtitleMenu()
-        audioButton.menu = makeDeferredAudioMenu()
+        subtitleButton.menu = MediaOptionsMenuBuilder.makeSubtitleMenu(renderer: renderer)
+        audioButton.menu = MediaOptionsMenuBuilder.makeAudioMenu(renderer: renderer)
     }
 
-    private func makeDeferredSubtitleMenu() -> UIMenu {
-        UIMenu(title: "Subtitles", image: UIImage(systemName: "captions.bubble"), children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                guard let self else { completion([]); return }
-                var actions: [UIAction] = []
-                let currentSub = self.renderer.getCurrentSubtitleTrack()
-                let offAction = UIAction(
-                    title: "Off",
-                    image: currentSub == 0 ? UIImage(systemName: "checkmark") : nil
-                ) { [weak self] _ in
-                    self?.renderer.disableSubtitles()
-                    UserDefaults.standard.set("off", forKey: "lastSubtitleLang")
-                }
-                actions.append(offAction)
-                let tracks = self.renderer.getSubtitleTracks()
-                for track in tracks {
-                    let trackId = track["id"] as? Int ?? 0
-                    let langCode = track["lang"] as? String
-                    let displayLang = langCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) }
-                    let label = track["title"] as? String
-                        ?? displayLang
-                        ?? langCode
-                        ?? "Track \(trackId)"
-                    let isSelected = currentSub == trackId
-                    let action = UIAction(
-                        title: label,
-                        image: isSelected ? UIImage(systemName: "checkmark") : nil
-                    ) { [weak self] _ in
-                        self?.renderer.setSubtitleTrack(trackId)
-                        // Remember the lang code (or title as fallback) for future sessions
-                        let key = langCode ?? label
-                        UserDefaults.standard.set(key, forKey: "lastSubtitleLang")
-                    }
-                    actions.append(action)
-                }
-                completion(actions)
-            }
-        ])
-    }
-
-    private func makeDeferredAudioMenu() -> UIMenu {
-        UIMenu(title: "Audio", image: UIImage(systemName: "speaker.wave.2"), children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                guard let self else { completion([]); return }
-                var actions: [UIAction] = []
-                let currentAudio = self.renderer.getCurrentAudioTrack()
-                let tracks = self.renderer.getAudioTracks()
-                for track in tracks {
-                    let trackId = track["id"] as? Int ?? 0
-                    let langCode = track["lang"] as? String
-                    let displayLang = langCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) }
-                    let label = track["title"] as? String
-                        ?? displayLang
-                        ?? langCode
-                        ?? "Track \(trackId)"
-                    let isSelected = currentAudio == trackId
-                    let action = UIAction(
-                        title: label,
-                        image: isSelected ? UIImage(systemName: "checkmark") : nil
-                    ) { [weak self] _ in self?.renderer.setAudioTrack(trackId) }
-                    actions.append(action)
-                }
-                if actions.isEmpty {
-                    actions.append(UIAction(title: "No audio tracks", attributes: .disabled) { _ in })
-                }
-                completion(actions)
-            }
-        ])
+    // MARK: Settings Panel
+    @objc private func gearTapped() {
+        let vc = PlayerSettingsViewController()
+        vc.onSpeedChanged = { [weak self] speed in
+            self?.renderer.setSpeed(speed)
+        }
+        vc.onSubtitleScaleChanged = { [weak self] scale in
+            self?.renderer.setSubtitleScale(scale)
+        }
+        vc.onSubtitleDelayChanged = { [weak self] delay in
+            self?.renderer.setSubtitleDelay(delay)
+        }
+        definesPresentationContext = true
+        vc.modalPresentationStyle = .custom
+        vc.transitioningDelegate = vc
+        vc.loadViewIfNeeded()
+        vc.applyStoredSpeed()
+        vc.applyStoredSubtitleScale()
+        vc.applyStoredSubtitleDelay()
+        // Anchor under the gear
+        if let windowRect = gearButton.superview?.convert(gearButton.frame, to: nil) {
+            vc.anchorRectInWindow = windowRect
+        }
+        present(vc, animated: true)
     }
 
     // MARK: Button handlers
@@ -621,18 +783,19 @@ final class PlayerViewController: UIViewController {
 
     @objc private func skipBackwardTapped() {
         renderer.seek(by: -Double(controls.skipBack))
-        showControlsTemporarily()
     }
 
     @objc private func skipForwardTapped() {
         renderer.seek(by: Double(controls.skipForward))
-        showControlsTemporarily()
     }
 
     // MARK: - Stored settings
 
     private func applyStoredSettings() {
         let ud = UserDefaults.standard
+        // Subtitle scale
+        let scale = (UserDefaults.standard.object(forKey: "subtitleScale") as? Double) ?? 1.0
+        renderer.setSubtitleScale(scale)
         // Hardware decoding (default on)
         let hwDecoding = (ud.object(forKey: "hardwareDecoding") as? Bool) ?? true
         #if !targetEnvironment(simulator)
@@ -700,7 +863,6 @@ final class PlayerViewController: UIViewController {
         case .began:
             isSeeking = true
             controls.isScrubbing = true
-            controlsHideWork?.cancel()
             fallthrough
         case .changed:
             let v = scrubValue(forTouchX: x)
@@ -718,7 +880,6 @@ final class PlayerViewController: UIViewController {
             isSeeking = false
             controls.isScrubbing = false
             renderer.seek(to: Double(v))  // precise seek on release
-            showControlsTemporarily()
         default:
             break
         }
@@ -729,14 +890,15 @@ final class PlayerViewController: UIViewController {
         scrubber.value = v
         positionLabel.text = formatTime(Double(v))
         renderer.seek(to: Double(v))
-        showControlsTemporarily()
     }
 
     @objc private func containerTapped() {
-        if controlsVisible { hideControls() } else { showControlsTemporarily() }
+        if controlsVisible { hideControls() } else { showControls() }
     }
 
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
+        let pinchEnabled = (UserDefaults.standard.object(forKey: "enablePinchZoom") as? Bool) ?? true
+        guard pinchEnabled else { return }
         guard g.state == .ended || g.state == .changed else { return }
         let wantsZoom = g.scale > 1.0
         guard wantsZoom != isZoomFill else { return }
@@ -745,47 +907,135 @@ final class PlayerViewController: UIViewController {
         CATransaction.setAnimationDuration(0.25)
         displayLayer.videoGravity = isZoomFill ? .resizeAspectFill : .resizeAspect
         CATransaction.commit()
-        showControlsTemporarily()
     }
 
     // MARK: Hold-to-speed gesture
 
     @objc private func handleHold(_ g: UILongPressGestureRecognizer) {
+        let enabled = (UserDefaults.standard.object(forKey: "enableHoldSpeed") as? Bool) ?? true
+        guard enabled else { return }
         switch g.state {
         case .began:
             originalSpeed = renderer.getSpeed()
             let stored = Double(UserDefaults.standard.float(forKey: "holdSpeedPlayer"))
             let target = stored > 0 ? stored : 2.0
             renderer.setSpeed(target)
-            speedIndicatorLabel.text = String(format: "%.1fx", target)
-            UIView.animate(withDuration: 0.2) { self.speedIndicatorLabel.alpha = 1 }
+            showSpeedIndicator(text: String(format: "%.1fx", target), autoHideAfter: 1.0)
         case .ended, .cancelled:
             renderer.setSpeed(originalSpeed)
-            UIView.animate(withDuration: 0.2) { self.speedIndicatorLabel.alpha = 0 }
+            speedIndicatorHideWorkItem?.cancel()
+            speedIndicatorHideWorkItem = nil
+            UIView.animate(withDuration: 0.2) { self.speedIndicatorContainer.alpha = 0 }
         default: break
         }
     }
 
+    @objc private func handleControlPan(_ g: UIPanGestureRecognizer) {
+        let loc = g.location(in: videoContainer)
+        let leftThird = loc.x <= videoContainer.bounds.width * 0.33
+        let rightThird = loc.x >= videoContainer.bounds.width * 0.67
+        switch g.state {
+        case .began:
+            panStartY = loc.y
+            let brightEnabled = (UserDefaults.standard.object(forKey: "enableSwipeBrightness") as? Bool) ?? true
+            let volEnabled = (UserDefaults.standard.object(forKey: "enableSwipeVolume") as? Bool) ?? true
+            if brightEnabled && leftThird {
+                controlPanMode = .brightness
+                startBrightness = UIScreen.main.brightness
+                showBrightnessIndicator(percent: Int(round(startBrightness * 100)))
+            } else if volEnabled && rightThird {
+                controlPanMode = .volume
+                if let slider = hiddenVolumeView.subviews.compactMap({ $0 as? UISlider }).first {
+                    startVolume = slider.value
+                } else {
+                    controlPanMode = .none
+                }
+            } else {
+                controlPanMode = .none
+            }
+        case .changed:
+            let dy = panStartY - loc.y
+            // Map roughly one full upward swipe (full view height) to a full-range change
+            let sensitivity = max(100, videoContainer.bounds.height)
+            switch controlPanMode {
+            case .brightness:
+                var newVal = startBrightness + (dy / sensitivity)
+                newVal = max(0.0, min(1.0, newVal))
+                UIScreen.main.brightness = newVal
+                showBrightnessIndicator(percent: Int(round(newVal * 100)))
+            case .volume:
+                guard let slider = hiddenVolumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
+                var newVal = startVolume + Float(dy / sensitivity)
+                newVal = max(0.0, min(1.0, newVal))
+                slider.value = newVal
+                slider.sendActions(for: .valueChanged)
+                if !controlsVisible { showVolumeHUD(autoHideAfter: 0.8) }
+            case .none:
+                break
+            }
+        default:
+            if controlPanMode == .brightness {
+                showBrightnessIndicator(percent: Int(round(UIScreen.main.brightness * 100)), autoHideAfter: 0.6)
+            }
+            controlPanMode = .none
+        }
+    }
+
+    private func showBrightnessIndicator(percent: Int, autoHideAfter seconds: TimeInterval? = nil) {
+        brightnessIndicatorLabel.text = "\(percent)%"
+        UIView.animate(withDuration: 0.15) { self.brightnessIndicator.alpha = 1 }
+        brightnessIndicatorHideWorkItem?.cancel()
+        if let seconds {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                UIView.animate(withDuration: 0.2) { self.brightnessIndicator.alpha = 0 }
+            }
+            brightnessIndicatorHideWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+        }
+    }
+
+    private func handleSystemVolumeChanged() {
+        if !controlsVisible { showVolumeHUD(autoHideAfter: 1.2) }
+    }
+
+    private func showVolumeHUD(autoHideAfter seconds: TimeInterval) {
+        DispatchQueue.main.async {
+            self.controls.isVolumeHUDVisible = true
+        }
+        volumeHUDHideWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            DispatchQueue.main.async { self?.controls.isVolumeHUDVisible = false }
+        }
+        volumeHUDHideWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func showSpeedIndicator(text: String, autoHideAfter seconds: TimeInterval) {
+        speedIndicatorLabel.text = text
+        UIView.animate(withDuration: 0.2) { self.speedIndicatorContainer.alpha = 1 }
+        speedIndicatorHideWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            UIView.animate(withDuration: 0.2) { self.speedIndicatorContainer.alpha = 0 }
+        }
+        speedIndicatorHideWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
     // MARK: Controls visibility
 
-    private func showControlsTemporarily() {
-        controlsHideWork?.cancel()
+    private func showControls() {
         controlsVisible = true
-
         controls.isVisible = true
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseOut) {
             self.controlsOverlayView.alpha = 1
             self.progressContainer.alpha = 1
             self.mediaOptionsContainer.alpha = 1
         }
-
-        let work = DispatchWorkItem { [weak self] in self?.hideControls() }
-        controlsHideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     private func hideControls() {
-        controlsHideWork?.cancel()
         controlsVisible = false
 
         controls.isVisible = false
@@ -801,7 +1051,6 @@ final class PlayerViewController: UIViewController {
     private func updatePlayPauseButton(isPaused: Bool) {
         DispatchQueue.main.async {
             self.controls.isPaused = isPaused
-            self.showControlsTemporarily()
         }
     }
 

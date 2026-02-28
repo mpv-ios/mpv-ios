@@ -18,6 +18,9 @@ struct SettingsView: View {
                     NavigationLink(destination: DecoderSettingsView()) {
                         Label("Decoder", systemImage: "film.stack")
                     }
+                    NavigationLink(destination: GesturesSettingsView()) {
+                        Label("Gestures", systemImage: "hand.tap")
+                    }
                 } header: {
                     Text("Player")
                 } footer: {
@@ -46,6 +49,55 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+}
+
+struct GesturesSettingsView: View {
+    @AppStorage("enableHoldSpeed") private var enableHoldSpeed: Bool = true
+    @AppStorage("holdSpeedPlayer") private var holdSpeed: Double = 2.0
+    @AppStorage("enableSwipeBrightness") private var enableSwipeBrightness: Bool = true
+    @AppStorage("enableSwipeVolume") private var enableSwipeVolume: Bool = true
+    @AppStorage("enablePinchZoom") private var enablePinchZoom: Bool = true
+
+    var body: some View {
+        List {
+            Section {
+                Toggle("Pinch to Zoom (fill)", isOn: $enablePinchZoom)
+            } header: {
+                Text("Zoom")
+            } footer: {
+                Text("Pinch to switch between fit and fill (crop) video modes.")
+            }
+
+            Section {
+                Toggle("Hold to Speed", isOn: $enableHoldSpeed)
+                HStack {
+                    Text("Hold Speed")
+                    Spacer()
+                    Picker("", selection: $holdSpeed) {
+                        Text("1.50×").tag(1.5)
+                        Text("2.00×").tag(2.0)
+                        Text("2.50×").tag(2.5)
+                        Text("3.00×").tag(3.0)
+                    }
+                    .pickerStyle(.menu)
+                }
+            } header: {
+                Text("Hold Gesture")
+            } footer: {
+                Text("Long‑press on the video to temporarily change playback speed. The indicator auto‑hides after a few seconds.")
+            }
+
+            Section {
+                Toggle("Swipe Brightness (left)", isOn: $enableSwipeBrightness)
+                Toggle("Swipe Volume (right)", isOn: $enableSwipeVolume)
+            } header: {
+                Text("Vertical Swipes")
+            } footer: {
+                Text("Swipe up/down on the left half to change screen brightness, and on the right half to change system volume.")
+            }
+        }
+        .navigationTitle("Gestures")
     }
 }
 
