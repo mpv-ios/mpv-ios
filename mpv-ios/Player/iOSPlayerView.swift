@@ -1050,6 +1050,7 @@ final class PlayerViewController: UIViewController {
         volumeHUDHideWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard !self.controlsVisible else { return }
             UIView.animate(withDuration: 0.2) { self.volumePill.alpha = 0 }
         }
         volumeHUDHideWorkItem = work
@@ -1073,6 +1074,8 @@ final class PlayerViewController: UIViewController {
     private func showControls() {
         controlsVisible = true
         controls.isVisible = true
+        volumeHUDHideWorkItem?.cancel()
+        volumeHUDHideWorkItem = nil
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseOut) {
             self.controlsOverlayView.alpha = 1
             self.progressContainer.alpha = 1
