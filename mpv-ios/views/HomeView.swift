@@ -164,7 +164,6 @@ private struct HomeActionButton: View {
 private struct URLEntrySheet: View {
     @Binding var url: String
     let onConfirm: (URL) -> Void
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(spacing: 16) {
@@ -184,8 +183,16 @@ private struct URLEntrySheet: View {
                     .keyboardType(.URL)
                     .foregroundStyle(.white)
                     .submitLabel(.go)
-                    .focused($isFocused)
                     .onSubmit { tryConfirm() }
+                if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                    Button {
+                        url = clip
+                    } label: {
+                        Image(systemName: "doc.on.clipboard")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color("AccentColor"))
+                    }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -219,7 +226,6 @@ private struct URLEntrySheet: View {
                 Color(white: 0.08).ignoresSafeArea()
             }
         }
-        .onAppear { isFocused = true }
     }
 
     private func tryConfirm() {

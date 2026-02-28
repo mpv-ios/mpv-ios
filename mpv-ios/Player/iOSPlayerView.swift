@@ -11,6 +11,9 @@ final class PlayerControlsModel: ObservableObject {
     @Published var isPaused: Bool = true
     @Published var isVisible: Bool = false
     @Published var isLoading: Bool = true
+    /// True only until the renderer has become ready for the first time.
+    /// Mid-playback buffering and seeks do NOT set this flag.
+    @Published var isInitialLoading: Bool = true
     @Published var isScrubbing: Bool = false
 
     @AppStorage("skipBackwardSeconds") var skipBack: Int = 10
@@ -59,6 +62,25 @@ struct GlassCircleButton: View {
     }
 }
 
+/// A plain circular button showing a spinning activity indicator (no glass background).
+/// Tapping it triggers the given action (e.g. play/pause while buffering).
+private struct BufferingCircleButton: View {
+    var size: CGFloat = 90
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .tint(.white)
+                .scaleEffect(1.4)
+                .frame(width: size, height: size)
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+    }
+}
+
 private struct ControlsOverlay: View {
     @ObservedObject var model: PlayerControlsModel
 
@@ -76,15 +98,21 @@ private struct ControlsOverlay: View {
                 Spacer()
             }
 
-            // Centre row — skip back / play-pause / skip forward
-            if !model.isLoading && !model.isScrubbing {
+            // Centre row — skip back / play-pause (or buffering spinner) / skip forward
+            // Hidden only during the very first load; mid-playback buffering shows the spinner.
+            if !model.isInitialLoading && !model.isScrubbing {
                 HStack(spacing: 56) {
                     GlassCircleButton(symbol: "gobackward.\(model.skipBack)", size: 60, pointSize: 24) { model.onSkipBack?() }
-                    GlassCircleButton(
-                        symbol: model.isPaused ? "play.fill" : "pause.fill",
-                        size: 90,
-                        pointSize: 38
-                    ) { model.onPlayPause?() }
+                    if model.isLoading {
+                        // Buffering: show a tappable spinner — tap still toggles play/pause
+                        BufferingCircleButton(size: 90) { model.onPlayPause?() }
+                    } else {
+                        GlassCircleButton(
+                            symbol: model.isPaused ? "play.fill" : "pause.fill",
+                            size: 90,
+                            pointSize: 38
+                        ) { model.onPlayPause?() }
+                    }
                     GlassCircleButton(symbol: "goforward.\(model.skipForward)", size: 60, pointSize: 24) { model.onSkipForward?() }
                 }
             }
@@ -859,20 +887,33 @@ extension PlayerViewController: MPVLayerRendererDelegate {
     func renderer(_ renderer: MPVLayerRenderer, didChangeLoading isLoading: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if isLoading {
-                self.controls.isLoading = true
-                self.loadingIndicator.alpha = 1
-                self.loadingIndicator.startAnimating()
-            } else {
-                self.controls.isLoading = false
-                self.loadingIndicator.stopAnimating()
-                self.loadingIndicator.alpha = 0
+            self.controls.isLoading = isLoading
+            // The UIKit spinner only covers the very first load; mid-playback
+            // buffering is represented by BufferingCircleButton in the SwiftUI overlay.
+            if self.controls.isInitialLoading {
+                if isLoading {
+                    self.loadingIndicator.alpha = 1
+                    self.loadingIndicator.startAnimating()
+                } else {
+                    self.loadingIndicator.stopAnimating()
+                    self.loadingIndicator.alpha = 0
+                }
+            }
+            if !isLoading {
                 self.updatePlayPauseButton(isPaused: self.renderer.isPausedState)
             }
         }
     }
 
     func renderer(_ renderer: MPVLayerRenderer, didBecomeReadyToSeek: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            // Stop the UIKit spinner immediately — from here on the SwiftUI
+            // overlay handles any buffering indicator.
+            self.loadingIndicator.stopAnimating()
+            self.loadingIndicator.alpha = 0
+            self.controls.isInitialLoading = false
+        }
         let ud = UserDefaults.standard
         // Apply default playback speed
         let speed = (ud.object(forKey: "defaultSpeed") as? Double) ?? 1.0
