@@ -121,7 +121,7 @@
 			mainGroup = 493CC6AD2F51ABBD0024C28C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "MPVKit" */,
+				492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "/Users/alexkim/Code/MPVKit-ios" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 493CC6B72F51ABBD0024C28C /* Products */;
@@ -395,17 +395,17 @@
 		};
 /* End XCConfigurationList section */
 
-		/* Begin XCLocalSwiftPackageReference section */
-			492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "MPVKit" */ = {
-				isa = XCLocalSwiftPackageReference;
-				relativePath = "/Users/alexkim/Code/MPVKit-ios";
-			};
-		/* End XCLocalSwiftPackageReference section */
+/* Begin XCLocalSwiftPackageReference section */
+		492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "/Users/alexkim/Code/MPVKit-ios" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "/Users/alexkim/Code/MPVKit-ios";
+		};
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		492F5ECF2F51BCF000624AB7 /* MPVKit-GPL */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 492F5ECE2F51BCF000624AB7 /* XCRemoteSwiftPackageReference "MPVKit" */;
+			package = 492F5ECE2F51BCF000624AB7 /* XCLocalSwiftPackageReference "/Users/alexkim/Code/MPVKit-ios" */;
 			productName = "MPVKit-GPL";
 		};
 /* End XCSwiftPackageProductDependency section */

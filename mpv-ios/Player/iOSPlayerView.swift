@@ -138,7 +138,8 @@ private struct VolumeSlider: UIViewRepresentable {
             slider.semanticContentAttribute = .forceLeftToRight
             slider.minimumTrackTintColor = .white
             slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.35)
-            slider.thumbTintColor = .white
+            slider.setThumbImage(UIImage(), for: .normal)
+            slider.setThumbImage(UIImage(), for: .highlighted)
         }
         return v
     }
@@ -149,7 +150,8 @@ private struct VolumeSlider: UIViewRepresentable {
             slider.semanticContentAttribute = .forceLeftToRight
             slider.minimumTrackTintColor = .white
             slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.35)
-            slider.thumbTintColor = .white
+            slider.setThumbImage(UIImage(), for: .normal)
+            slider.setThumbImage(UIImage(), for: .highlighted)
         }
     }
 }
@@ -163,12 +165,8 @@ private struct GlassPill<Content: View>: View {
             content()
                 .frame(minWidth: 140)
                 .background {
-                    Capsule().glassEffect(.regular.interactive())
+                    Capsule().glassEffect(.clear.interactive())
                 }
-                .overlay(
-                    Capsule()
-                        .fill(Color.black.opacity(0.18))
-                )
                 .clipShape(Capsule())
                 .overlay(
                     Capsule()
@@ -178,10 +176,6 @@ private struct GlassPill<Content: View>: View {
             content()
                 .frame(minWidth: 140)
                 .background(.ultraThinMaterial, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .fill(Color.black.opacity(0.18))
-                )
                 .overlay(
                     Capsule()
                         .stroke(Color.white.opacity(0.18), lineWidth: 1 / UIScreen.main.scale)
@@ -201,15 +195,6 @@ struct iOSPlayerScreen: View {
             _PlayerViewControllerRepresentable(url: url, controls: controls)
                 .ignoresSafeArea()
             ControlsOverlay(model: controls)
-        }
-        .overlay(alignment: .topTrailing) {
-            VolumeSlider()
-                .frame(width: 200, height: 30)
-                .padding(.trailing, 20)
-                .padding(.top, 19)
-                .opacity((controls.isVisible || controls.isVolumeHUDVisible) ? 1 : 0)
-                .animation(.easeInOut(duration: 0.2), value: controls.isVolumeHUDVisible)
-                .animation(.easeInOut(duration: 0.2), value: controls.isVisible)
         }
     }
 }
@@ -321,6 +306,8 @@ final class PlayerViewController: UIViewController {
         s.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.3)
         s.setThumbImage(UIImage(), for: .normal)
         s.setThumbImage(UIImage(), for: .highlighted)
+        s.contentVerticalAlignment = .center
+        s.transform = CGAffineTransform(scaleX: 1.0, y: 0.9)
         s.isUserInteractionEnabled = false   // driven by pan/tap gesture below
         s.value = 0
         return s
@@ -332,6 +319,7 @@ final class PlayerViewController: UIViewController {
         v.alpha = 0
         return v
     }()
+    private let volumePill = VolumePillView()
 
     private lazy var subtitleButton: UIButton = {
         let b = UIButton(type: .system)
@@ -378,6 +366,8 @@ final class PlayerViewController: UIViewController {
     private var pipController: PiPController?
     private let initialURL: URL
     private var isSeeking = false
+    private var endSeekDelayWorkItem: DispatchWorkItem?
+    private var wasPlayingBeforeScrub = false
     private var cachedPosition: Double = 0
     private var cachedDuration: Double = 0
     private var originalSpeed: Double = 1.0
@@ -556,6 +546,7 @@ final class PlayerViewController: UIViewController {
         videoContainer.addSubview(progressContainer)
         videoContainer.addSubview(mediaOptionsContainer)
         videoContainer.addSubview(brightnessIndicator)
+        videoContainer.addSubview(volumePill)
         let brightStack = UIStackView(arrangedSubviews: [brightnessIconView, brightnessIndicatorLabel])
         brightStack.translatesAutoresizingMaskIntoConstraints = false
         brightStack.axis = .horizontal
@@ -639,6 +630,7 @@ final class PlayerViewController: UIViewController {
             scrubber.leadingAnchor.constraint(equalTo: positionLabel.trailingAnchor, constant: 8),
             scrubber.trailingAnchor.constraint(equalTo: durationLabel.leadingAnchor, constant: -8),
             scrubber.centerYAnchor.constraint(equalTo: progressContainer.centerYAnchor),
+            scrubber.heightAnchor.constraint(equalToConstant: 20),
 
             // Media options pill — trailing-aligned, sits just above the progress bar
             mediaOptionsContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
@@ -667,6 +659,12 @@ final class PlayerViewController: UIViewController {
             brightnessIconView.widthAnchor.constraint(equalToConstant: 16),
             brightnessIconView.heightAnchor.constraint(equalToConstant: 16),
             brightnessIndicatorLabel.widthAnchor.constraint(equalToConstant: 44),
+
+            // Volume pill — top-right, aligns with top bar paddings
+            volumePill.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+            volumePill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            volumePill.heightAnchor.constraint(equalToConstant: 44),
+            volumePill.widthAnchor.constraint(equalToConstant: 220),
         ])
     }
 
@@ -702,10 +700,14 @@ final class PlayerViewController: UIViewController {
 
         setupMediaOptionsButtons()
 
+        // Volume gestures handled internally by VolumePillView
+
         let tap = UITapGestureRecognizer(target: self, action: #selector(containerTapped))
         tap.delegate = self
         videoContainer.addGestureRecognizer(tap)
     }
+
+    // Volume gestures are encapsulated in VolumePillView
 
     private func setupHoldGesture() {
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleHold(_:)))
@@ -849,20 +851,30 @@ final class PlayerViewController: UIViewController {
     private var lastLiveScrubTime: TimeInterval = 0
     private let liveScrubInterval: TimeInterval = 1.0 / 15  // ~15fps
 
+    /// Generic slider mapping: map a touch X in a container to a UISlider value.
+    private func computeSliderValue(_ slider: UISlider, in container: UIView, touchX x: CGFloat) -> Float {
+        let trackInSlider = slider.trackRect(forBounds: slider.bounds)
+        let track = slider.convert(trackInSlider, to: container)
+        guard track.width > 0 else { return slider.value }
+        let ratio = Float(max(0, min(1, (x - track.minX) / track.width)))
+        return slider.minimumValue + ratio * (slider.maximumValue - slider.minimumValue)
+    }
+
     /// Converts an x position inside progressContainer to a playback time.
     private func scrubValue(forTouchX x: CGFloat) -> Float {
-        let track = scrubber.convert(scrubber.trackRect(forBounds: scrubber.bounds), to: progressContainer)
-        guard track.width > 0 else { return scrubber.value }
-        let ratio = Float(max(0, min(1, (x - track.minX) / track.width)))
-        return scrubber.minimumValue + ratio * (scrubber.maximumValue - scrubber.minimumValue)
+        return computeSliderValue(scrubber, in: progressContainer, touchX: x)
     }
 
     @objc private func scrubberPanned(_ g: UIPanGestureRecognizer) {
         let x = g.location(in: progressContainer).x
         switch g.state {
         case .began:
+            endSeekDelayWorkItem?.cancel()
             isSeeking = true
             controls.isScrubbing = true
+            // Pause playback while scrubbing to avoid UI fighting with advancing playback
+            wasPlayingBeforeScrub = !renderer.isPausedState
+            if wasPlayingBeforeScrub { renderer.pausePlayback() }
             fallthrough
         case .changed:
             let v = scrubValue(forTouchX: x)
@@ -877,9 +889,15 @@ final class PlayerViewController: UIViewController {
         case .ended, .cancelled:
             let v = scrubValue(forTouchX: x)
             scrubber.value = v
-            isSeeking = false
             controls.isScrubbing = false
             renderer.seek(to: Double(v))  // precise seek on release
+            // Delay clearing isSeeking briefly to avoid jitter from in-flight updates
+            endSeekDelayWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.isSeeking = false }
+            endSeekDelayWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            // Resume playback if it was playing before scrubbing
+            if wasPlayingBeforeScrub { renderer.play() }
         default:
             break
         }
@@ -997,15 +1015,15 @@ final class PlayerViewController: UIViewController {
 
     private func handleSystemVolumeChanged() {
         if !controlsVisible { showVolumeHUD(autoHideAfter: 1.2) }
+        volumePill.syncToSystemVolume()
     }
 
     private func showVolumeHUD(autoHideAfter seconds: TimeInterval) {
-        DispatchQueue.main.async {
-            self.controls.isVolumeHUDVisible = true
-        }
+        UIView.animate(withDuration: 0.15) { self.volumePill.alpha = 1 }
         volumeHUDHideWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            DispatchQueue.main.async { self?.controls.isVolumeHUDVisible = false }
+            guard let self else { return }
+            UIView.animate(withDuration: 0.2) { self.volumePill.alpha = 0 }
         }
         volumeHUDHideWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
@@ -1032,6 +1050,7 @@ final class PlayerViewController: UIViewController {
             self.controlsOverlayView.alpha = 1
             self.progressContainer.alpha = 1
             self.mediaOptionsContainer.alpha = 1
+            self.volumePill.alpha = 1
         }
     }
 
@@ -1043,6 +1062,7 @@ final class PlayerViewController: UIViewController {
             self.controlsOverlayView.alpha = 0
             self.progressContainer.alpha = 0
             self.mediaOptionsContainer.alpha = 0
+            self.volumePill.alpha = 0
         }
     }
 
