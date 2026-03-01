@@ -337,6 +337,8 @@ final class PlayerViewController: UIViewController {
     }()
     private let volumePill = VolumePillView()
 
+    // Removed: bottom mini progress (now a shared SwiftUI component used in Browse)
+
     private lazy var subtitleButton: UIButton = {
         let b = UIButton(type: .system)
         b.translatesAutoresizingMaskIntoConstraints = false
@@ -388,6 +390,8 @@ final class PlayerViewController: UIViewController {
     private var cachedDuration: Double = 0
     private var originalSpeed: Double = 1.0
     private var controlsVisible = true
+    private var baseSubtitleScale: Double = 1.0
+    private var baseSubtitleMarginY: Int = 80
     private var panStartY: CGFloat = 0
     private var startBrightness: CGFloat = 0
     private var startVolume: Float = 0
@@ -469,7 +473,8 @@ final class PlayerViewController: UIViewController {
         do {
             try renderer.start()
             // Push subtitles above the progress bar (44pt bar + 8pt padding + safe area ≈ 80pt)
-            renderer.setSubtitleMarginY(80)
+            baseSubtitleMarginY = 80
+            renderer.setSubtitleMarginY(baseSubtitleMarginY)
             applyStoredSettings()
         } catch {
             print("[PlayerViewController] Failed to start renderer: \(error)")
@@ -532,6 +537,7 @@ final class PlayerViewController: UIViewController {
             grad.frame = controlsOverlayView.bounds
         }
         CATransaction.commit()
+        updateSubtitleZoomAdaption()
     }
 
     deinit {
@@ -779,10 +785,18 @@ final class PlayerViewController: UIViewController {
             self?.renderer.setSpeed(speed)
         }
         vc.onSubtitleScaleChanged = { [weak self] scale in
-            self?.renderer.setSubtitleScale(scale)
+            guard let self else { return }
+            // Treat the gear's scale as the user-selected base; adapt on top when zoomed
+            self.baseSubtitleScale = scale
+            self.updateSubtitleZoomAdaption()
         }
         vc.onSubtitleDelayChanged = { [weak self] delay in
             self?.renderer.setSubtitleDelay(delay)
+        }
+        vc.onSubtitlePositionChanged = { [weak self] uiPos in
+            // UI: 0=bottom..100=top -> mpv: 0=top..100=bottom
+            let mpvPos = max(0, min(100, 100 - uiPos))
+            self?.renderer.setSubtitlePosition(mpvPos)
         }
         definesPresentationContext = true
         vc.modalPresentationStyle = .custom
@@ -790,6 +804,7 @@ final class PlayerViewController: UIViewController {
         vc.loadViewIfNeeded()
         vc.applyStoredSpeed()
         vc.applyStoredSubtitleScale()
+        vc.applyStoredSubtitlePosition()
         vc.applyStoredSubtitleDelay()
         // Anchor under the gear
         if let windowRect = gearButton.superview?.convert(gearButton.frame, to: nil) {
@@ -823,8 +838,16 @@ final class PlayerViewController: UIViewController {
     private func applyStoredSettings() {
         let ud = UserDefaults.standard
         // Subtitle scale
-        let scale = (UserDefaults.standard.object(forKey: "subtitleScale") as? Double) ?? 1.0
-        renderer.setSubtitleScale(scale)
+        let rawScale = (UserDefaults.standard.object(forKey: "subtitleScale") as? Double) ?? 1.0
+        let clampedScale = min(max(rawScale, 0.5), 2.5)
+        baseSubtitleScale = clampedScale
+        renderer.setSubtitleScale(clampedScale)
+        // Subtitle position UI: 0=bottom..100=top (slider)
+        let uiPos = (ud.object(forKey: "subtitlePosition") as? Int) ?? 0
+        let mpvPos = max(0, min(100, 100 - uiPos))
+        renderer.setSubtitlePosition(mpvPos)
+        // Keep horizontal centered by default
+        renderer.setSubtitleAlignX("center")
         // Hardware decoding (default on)
         let hwDecoding = (ud.object(forKey: "hardwareDecoding") as? Bool) ?? true
         #if !targetEnvironment(simulator)
@@ -952,6 +975,7 @@ final class PlayerViewController: UIViewController {
         CATransaction.setAnimationDuration(0.25)
         displayLayer.videoGravity = isZoomFill ? .resizeAspectFill : .resizeAspect
         CATransaction.commit()
+        updateSubtitleZoomAdaption()
     }
 
     // MARK: Hold-to-speed gesture
@@ -1123,6 +1147,12 @@ final class PlayerViewController: UIViewController {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
+    /// Apply base subtitle scale and margin; no auto adjustments.
+    private func updateSubtitleZoomAdaption() {
+        renderer.setSubtitleScale(baseSubtitleScale)
+        renderer.setSubtitleMarginY(baseSubtitleMarginY)
+    }
+
     private func displayName(for url: URL) -> String {
         if url.isFileURL, let name = (try? url.resourceValues(forKeys: [.localizedNameKey]))?.localizedName, !name.isEmpty {
             return name
@@ -1136,6 +1166,12 @@ final class PlayerViewController: UIViewController {
     @objc private func userDefaultsChanged() {
         DispatchQueue.main.async {
             self.fileTitleLabel.alpha = (self.controlsVisible && self.showFileTitleEnabled) ? 1 : 0
+            // Update base subtitle scale if changed in Settings and re-apply adaption
+            if let newBase = UserDefaults.standard.object(forKey: "subtitleScale") as? Double {
+                self.baseSubtitleScale = min(max(newBase, 0.5), 2.5)
+                self.updateSubtitleZoomAdaption()
+            }
+            // Ignoring sub-use-margins by request
         }
     }
 
@@ -1190,6 +1226,7 @@ extension PlayerViewController: MPVLayerRendererDelegate {
             self.positionLabel.text = self.formatTime(position)
             self.durationLabel.text = self.formatTime(duration)
             self.pipController?.setCurrentTimeFromSeconds(position, duration: duration)
+            // Mini progress is handled in Browse via a SwiftUI component.
         }
     }
 
@@ -1262,6 +1299,10 @@ extension PlayerViewController: MPVLayerRendererDelegate {
     }
     func renderer(_ renderer: MPVLayerRenderer, didSelectAudioOutput audioOutput: String) {}
 }
+
+// MARK: - Subtitle horizontal shift helper
+
+// Horizontal subtitle shifting disabled: using centered alignment only.
 
 // MARK: - PiPControllerDelegate
 

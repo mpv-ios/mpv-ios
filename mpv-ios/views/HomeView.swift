@@ -90,9 +90,9 @@ struct HomeView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                _ = url.startAccessingSecurityScopedResource()
+                let saved = persistImportedFile(at: url)
                 snapshotOrientation()
-                playerURL = PlayerItem(url: url)
+                playerURL = PlayerItem(url: saved ?? url)
             }
         }
         // Player
@@ -119,6 +119,45 @@ struct HomeView: View {
         case .portraitUpsideDown: orientationBeforePlayer = .portraitUpsideDown
         default:                  orientationBeforePlayer = .portrait
         }
+    }
+}
+
+// MARK: - File persistence
+
+private func persistImportedFile(at externalURL: URL) -> URL? {
+    let fm = FileManager.default
+    guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+
+    // If it's already inside our Documents, just return it
+    if externalURL.path.hasPrefix(docs.path) {
+        return externalURL
+    }
+
+    let started = externalURL.startAccessingSecurityScopedResource()
+    defer {
+        if started { externalURL.stopAccessingSecurityScopedResource() }
+    }
+
+    var dest = docs.appendingPathComponent(externalURL.lastPathComponent, isDirectory: false)
+    // Ensure unique name if a file exists
+    if fm.fileExists(atPath: dest.path) {
+        let base = dest.deletingPathExtension().lastPathComponent
+        let ext = dest.pathExtension
+        var counter = 2
+        while fm.fileExists(atPath: dest.path) && counter < 10_000 {
+            let name = "\(base) \(counter)"
+            dest = docs.appendingPathComponent(name).appendingPathExtension(ext)
+            counter += 1
+        }
+    }
+
+    do {
+        try fm.copyItem(at: externalURL, to: dest)
+        // Make sure it's not excluded from backups unintentionally; default is ok
+        return dest
+    } catch {
+        print("[Home] Copy failed: \(error)")
+        return nil
     }
 }
 

@@ -8,6 +8,7 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
 
     var onSpeedChanged: ((Double) -> Void)?
     var onSubtitleScaleChanged: ((Double) -> Void)?
+    var onSubtitlePositionChanged: ((Int) -> Void)?
     var onSubtitleDelayChanged: ((Double) -> Void)?
 
     // MARK: - Speed
@@ -31,7 +32,7 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
         let s = UISlider()
         s.translatesAutoresizingMaskIntoConstraints = false
         s.minimumValue = 0.5
-        s.maximumValue = 3.0
+        s.maximumValue = 2.5
         s.value = 1.0
         return s
     }()
@@ -48,6 +49,25 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
 
     // Subtitle delay
     private var currentSubtitleDelay: Double = 0.0
+        // Subtitle position (0..100, 0=bottom, 100=top)
+        private var currentSubtitlePosition: Int = 0
+        private let subtitlePositionSlider: UISlider = {
+            let s = UISlider()
+            s.translatesAutoresizingMaskIntoConstraints = false
+            s.minimumValue = 0
+            s.maximumValue = 100
+            s.value = 100
+            return s
+        }()
+        private let subtitlePositionLabel: UILabel = {
+            let l = UILabel()
+            l.translatesAutoresizingMaskIntoConstraints = false
+            l.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+            l.textColor = .secondaryLabel
+            l.textAlignment = .right
+            l.text = "100"
+            return l
+        }()
     private let subtitleDelayLabel: UILabel = {
         let l = UILabel()
         l.translatesAutoresizingMaskIntoConstraints = false
@@ -96,6 +116,7 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
             makeSpeedRow(),
             makeSectionHeader("SUBTITLE"),
             makeSubtitleRow(),
+            makeSubtitlePositionRow(),
             makeSubtitleDelayRow(),
         ])
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -108,8 +129,8 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
         stack.layoutMargins = UIEdgeInsets(top: topInset, left: sideInset, bottom: bottomInset, right: sideInset)
         panel.contentView.addSubview(stack)
 
-        // Insets + headers + rows (44pt rows): speed + subtitle size + subtitle delay
-        let totalHeight: CGFloat = topInset + 28 + 44 + 28 + 44 + 44 + bottomInset
+        // Insets + headers + rows (44pt rows): speed + size + position + delay
+        let totalHeight: CGFloat = topInset + 28 + 44 + 28 + 44 + 44 + 44 + bottomInset
         preferredContentSize = CGSize(width: 320, height: totalHeight)
 
         // Size constraints
@@ -217,6 +238,8 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
 
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
             title.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            // Fix title width to align slider start with Position row
+            title.widthAnchor.constraint(equalToConstant: 80),
 
             subtitleValueLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             subtitleValueLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
@@ -225,6 +248,51 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
             subtitleSlider.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 10),
             subtitleSlider.trailingAnchor.constraint(equalTo: subtitleValueLabel.leadingAnchor, constant: -8),
             subtitleSlider.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+        return row
+    }
+
+    private func makeSubtitlePositionRow() -> UIView {
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let icon = UIImageView(image: UIImage(systemName: "arrow.up.and.down"))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.tintColor = .secondaryLabel
+        icon.contentMode = .scaleAspectFit
+
+        let title = UILabel()
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.text = "Position"
+        title.font = .systemFont(ofSize: 15, weight: .regular)
+        title.textColor = .label
+
+        subtitlePositionSlider.addTarget(self, action: #selector(subtitlePosSliderChanged(_:)), for: .valueChanged)
+
+        row.addSubview(icon)
+        row.addSubview(title)
+        row.addSubview(subtitlePositionSlider)
+        row.addSubview(subtitlePositionLabel)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 20),
+            icon.heightAnchor.constraint(equalToConstant: 20),
+
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            title.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            // Match title width with Size row so both sliders align
+            title.widthAnchor.constraint(equalToConstant: 80),
+
+            subtitlePositionLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            subtitlePositionLabel.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            subtitlePositionLabel.widthAnchor.constraint(equalToConstant: 38),
+
+            subtitlePositionSlider.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 10),
+            subtitlePositionSlider.trailingAnchor.constraint(equalTo: subtitlePositionLabel.leadingAnchor, constant: -8),
+            subtitlePositionSlider.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
         return row
     }
@@ -377,15 +445,23 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
     // MARK: - Public API
 
     func applyStoredSubtitleScale() {
-        let scale = (UserDefaults.standard.object(forKey: "subtitleScale") as? Double) ?? 1.0
-        subtitleSlider.value = Float(scale)
-        updateSubtitleLabel(scale)
+        let raw = (UserDefaults.standard.object(forKey: "subtitleScale") as? Double) ?? 1.0
+        let clamped = min(max(raw, 0.5), 2.5)
+        subtitleSlider.value = Float(clamped)
+        updateSubtitleLabel(clamped)
     }
 
     func applyStoredSubtitleDelay() {
         let delay = (UserDefaults.standard.object(forKey: "subtitleDelaySeconds") as? Double) ?? 0.0
         currentSubtitleDelay = clampSubtitleDelay(delay)
         updateSubtitleDelayLabel()
+    }
+
+    func applyStoredSubtitlePosition() {
+        let pos = (UserDefaults.standard.object(forKey: "subtitlePosition") as? Int) ?? 0
+        currentSubtitlePosition = clampSubtitlePosition(pos)
+        subtitlePositionSlider.value = Float(currentSubtitlePosition)
+        updateSubtitlePositionLabel()
     }
 
     // Gestures settings are managed in the app Settings screen (SwiftUI), not here.
@@ -437,6 +513,26 @@ final class PlayerSettingsViewController: UIViewController, UIPopoverPresentatio
     private func clampSubtitleDelay(_ value: Double) -> Double {
         return min(max(value, -20.0), 20.0)
     }
+
+    private func updateSubtitlePositionLabel() {
+        subtitlePositionLabel.text = String(format: "%d", currentSubtitlePosition)
+    }
+
+    @objc private func subtitlePosSliderChanged(_ s: UISlider) {
+        // Round to nearest whole number for 0..100 range
+        let rounded = Int(s.value.rounded())
+        s.value = Float(rounded)
+        currentSubtitlePosition = clampSubtitlePosition(rounded)
+        updateSubtitlePositionLabel()
+        UserDefaults.standard.set(currentSubtitlePosition, forKey: "subtitlePosition")
+        onSubtitlePositionChanged?(currentSubtitlePosition)
+    }
+
+    private func clampSubtitlePosition(_ value: Int) -> Int {
+        return min(max(value, 0), 100)
+    }
+
+    // removed pad implementation; using simple slider only
 
     private func updateSpeedLabel() {
         let rounded = (currentSpeed * 100).rounded() / 100
