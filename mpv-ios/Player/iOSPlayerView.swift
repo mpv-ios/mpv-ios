@@ -689,7 +689,7 @@ final class PlayerViewController: UIViewController {
             brightStack.centerYAnchor.constraint(equalTo: brightnessIndicator.contentView.centerYAnchor),
             brightnessIconView.widthAnchor.constraint(equalToConstant: 16),
             brightnessIconView.heightAnchor.constraint(equalToConstant: 16),
-            brightnessIndicatorLabel.widthAnchor.constraint(equalToConstant: 44),
+            brightnessIndicatorLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
             // Volume pill — top-right, align trailing with media options pill (-12) to form a clean vertical stack
             volumePill.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
@@ -768,6 +768,7 @@ final class PlayerViewController: UIViewController {
     private func setupHoldGesture() {
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleHold(_:)))
         hold.minimumPressDuration = 0.5
+        hold.delegate = self
         videoContainer.addGestureRecognizer(hold)
 
         let pinchEnabled = (UserDefaults.standard.object(forKey: "enablePinchZoom") as? Bool) ?? true
@@ -791,6 +792,7 @@ final class PlayerViewController: UIViewController {
 
         let controlPan = UIPanGestureRecognizer(target: self, action: #selector(handleControlPan(_:)))
         controlPan.maximumNumberOfTouches = 1
+        controlPan.delegate = self
         videoContainer.addGestureRecognizer(controlPan)
     }
 
@@ -1228,6 +1230,12 @@ extension PlayerViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         // Allow pinch + tap/hold to coexist
         return gestureRecognizer is UIPinchGestureRecognizer || other is UIPinchGestureRecognizer
+    }
+
+    /// Never require system gestures (home bar, edge swipes) to fail before our gestures
+    /// can begin — this prevents the "System gesture gate timed out" log warning.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return false
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
